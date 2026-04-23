@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "accessguard"
+version = "0.1.0"
+description = "Detect unintended data access and privilege escalation in backend code"
+authors = ["Your Name"]
+readme = "README.md"
+packages = [{ include = "accessguard" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+[tool.poetry.scripts]
+accessguard = "accessguard.cli:app"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
+
