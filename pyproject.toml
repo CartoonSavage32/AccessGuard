@@ -2,12 +2,12 @@
 name = "accessguard"
 version = "0.1.0"
 description = "Detect unintended data access and privilege escalation in backend code"
-authors = ["Your Name"]
+authors = ["Aayush Mishra"]
 readme = "README.md"
 packages = [{ include = "accessguard" }]
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = "^3.13"
 
 [tool.poetry.scripts]
 accessguard = "accessguard.cli:app"
