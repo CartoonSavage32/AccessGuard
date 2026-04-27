@@ -5,6 +5,7 @@ from pathlib import Path
 DEFAULT_CONFIG: dict[str, list[str]] = {
     "sensitive_keywords": ["billing", "token", "auth", "secret"],
     "high_privilege_keywords": ["admin", "delete", "reset", "token", "decrypt", "billing"],
+    "generic_operation_keywords": ["delete", "update", "create"],
     "safe_routes": ["auth", "callback", "oauth", "login"],
 }
 

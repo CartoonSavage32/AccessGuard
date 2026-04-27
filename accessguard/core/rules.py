@@ -8,6 +8,7 @@ from accessguard.core.parser import RouteInfo, collect_calls
 
 SENSITIVE_NODE_BASE_KEYWORDS = {"database", "decrypt", "reset"}
 SAFE_RESOURCE_KEYWORDS = {"token", "encrypt", "decrypt"}
+DEFAULT_GENERIC_OPERATION_KEYWORDS = {"delete", "update", "create"}
 
 
 @dataclass(slots=True)
@@ -31,6 +32,9 @@ def detect_risks(
     route_by_key = {f"{route.method} {route.path}": route for route in routes}
     sensitive_keywords = _config_list(config, "sensitive_keywords")
     high_priv_keywords = _config_list(config, "high_privilege_keywords")
+    generic_operation_keywords = set(
+        _config_list(config, "generic_operation_keywords")
+    ) or set(DEFAULT_GENERIC_OPERATION_KEYWORDS)
     safe_routes = _config_list(config, "safe_routes")
 
     for path_risk in sensitive_paths:
@@ -48,10 +52,23 @@ def detect_risks(
         detected_domain = _detect_domain(access_domains, resource, sensitive_keywords)
         is_mismatch = route_domain not in access_domains if route_domain else True
         is_route_admin = "admin" in route.path.lower()
-        is_high_priv_resource = _access_privilege(resource, high_priv_keywords) == "HIGH"
+        is_sensitive_domain = _resource_is_sensitive_domain(
+            resource=resource,
+            access_domains=access_domains,
+            sensitive_keywords=sensitive_keywords,
+        )
+        is_high_priv_resource = _access_privilege(
+            resource=resource,
+            high_priv_keywords=high_priv_keywords,
+            sensitive_keywords=sensitive_keywords,
+            generic_operation_keywords=generic_operation_keywords,
+        ) == "HIGH"
         is_allowlisted = _is_allowlisted(route.path, resource, safe_routes)
         is_sensitive = _has_sensitive_access(path, sensitive_keywords)
         is_safe_route = _is_safe_route(route.path, safe_routes)
+        is_delete_route_delete_resource = (
+            route.method.upper() == "DELETE" and "delete" in resource.lower()
+        )
 
         # Apply both signals to every sensitive path.
         if is_safe_route or is_allowlisted:
@@ -67,7 +84,19 @@ def detect_risks(
                     score=1,
                 )
             )
-        elif (not is_route_admin and is_high_priv_resource) or is_mismatch:
+        elif is_delete_route_delete_resource and not is_sensitive_domain and not is_mismatch:
+            continue
+        elif (
+            # Primary escalation signal: sensitive domain crossing route-domain boundaries.
+            is_sensitive_domain
+            and is_mismatch
+        ) or (
+            # Domain mismatch remains a standalone high/medium signal.
+            is_mismatch
+        ) or (
+            # High-priv keywords are supporting signal, never generic verbs alone.
+            not is_route_admin and is_high_priv_resource and is_sensitive_domain
+        ):
             severity = "HIGH" if not route.has_auth else "MEDIUM"
             score = 6 if severity == "HIGH" else 4
             risks.append(
@@ -151,9 +180,21 @@ def _detect_domain(access_domains: set[str], resource: str, sensitive_keywords: 
     return "unknown"
 
 
-def _access_privilege(resource: str, high_priv_keywords: list[str]) -> str:
+def _access_privilege(
+    resource: str,
+    high_priv_keywords: list[str],
+    sensitive_keywords: list[str],
+    generic_operation_keywords: set[str],
+) -> str:
     lower = resource.lower()
-    if any(keyword in lower for keyword in high_priv_keywords):
+    scoped_high_priv = [
+        keyword
+        for keyword in high_priv_keywords
+        if keyword not in generic_operation_keywords
+    ]
+    if any(keyword in lower for keyword in scoped_high_priv) and any(
+        keyword in lower for keyword in sensitive_keywords
+    ):
         return "HIGH"
     return "NORMAL"
 
@@ -176,6 +217,15 @@ def _config_list(config: dict[str, list[str]], key: str) -> list[str]:
     return [str(value).lower() for value in values if str(value).strip()]
 
 
+def _resource_is_sensitive_domain(
+    resource: str, access_domains: set[str], sensitive_keywords: list[str]
+) -> bool:
+    lower = resource.lower()
+    if "db." in lower or "db" in access_domains:
+        return True
+    return any(keyword in lower or keyword in access_domains for keyword in sensitive_keywords)
+
+
 def detect_sensitive_paths(
     graph: dict[str, set[str] | list[tuple[str, str, str]]],
     routes: list[RouteInfo],
@@ -190,7 +240,15 @@ def detect_sensitive_paths(
     function_nodes = {name: f"func:{name}" for name in function_map}
     sensitive_node_keywords = SENSITIVE_NODE_BASE_KEYWORDS | set(
         _config_list(config, "sensitive_keywords")
-    ) | set(_config_list(config, "high_privilege_keywords"))
+    ) | {
+        keyword
+        for keyword in _config_list(config, "high_privilege_keywords")
+        if keyword
+        not in (
+            set(_config_list(config, "generic_operation_keywords"))
+            or set(DEFAULT_GENERIC_OPERATION_KEYWORDS)
+        )
+    }
 
     if isinstance(edges, list):
         for src, dst, _etype in edges:
