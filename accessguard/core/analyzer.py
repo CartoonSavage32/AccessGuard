@@ -4,6 +4,7 @@ import ast
 from dataclasses import dataclass
 from pathlib import Path
 
+from accessguard.core.config import DEFAULT_CONFIG
 from accessguard.core.graph import build_graph
 from accessguard.core.parser import (
     RouteInfo,
@@ -29,7 +30,10 @@ class AnalysisResult:
     sensitive_paths: list[dict[str, str | list[str]]]
 
 
-def analyze_project(project_path: Path) -> AnalysisResult:
+def analyze_project(
+    project_path: Path, config: dict[str, list[str]] | None = None
+) -> AnalysisResult:
+    effective_config = config or {key: list(values) for key, values in DEFAULT_CONFIG.items()}
     file_paths = _python_files(project_path)
     function_map = _build_function_map(file_paths)
     import_maps = _build_import_maps(file_paths)
@@ -48,8 +52,9 @@ def analyze_project(project_path: Path) -> AnalysisResult:
         import_maps=import_maps,
         class_map=class_map,
         instance_maps=instance_maps,
+        config=effective_config,
     )
-    risks = detect_risks(routes, sensitive_paths)
+    risks = detect_risks(routes, sensitive_paths, effective_config)
     return AnalysisResult(
         routes=routes,
         risks=risks,

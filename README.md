@@ -83,6 +83,7 @@ poetry install
 
 ```bash
 accessguard scan <path>
+accessguard init
 ```
 
 **Examples**
@@ -90,6 +91,7 @@ accessguard scan <path>
 accessguard scan .
 accessguard scan ./backend
 accessguard scan examples/sample_app
+accessguard init
 ```
 
 **Flags**
@@ -99,6 +101,56 @@ accessguard scan examples/sample_app
 | `--json` | Output results as JSON |
 | `--quiet` | Show only detected risks, suppress summary |
 | `--fail-on-high` | Exit with code `1` if any HIGH risks are found (useful in CI) |
+
+---
+
+## Configuration
+
+AccessGuard supports project-level configuration via `accessguard.yaml` in the project root.
+
+Use this command to create a starter config file:
+
+```bash
+accessguard init
+```
+
+When you run:
+
+```bash
+accessguard scan .
+```
+
+AccessGuard automatically loads `accessguard.yaml` if present. If no config file exists, AccessGuard falls back to built-in defaults.
+
+**Default config format**
+
+```yaml
+sensitive_keywords:
+  - billing
+  - token
+  - auth
+  - secret
+
+high_privilege_keywords:
+  - admin
+  - delete
+  - reset
+  - token
+  - decrypt
+  - billing
+
+safe_routes:
+  - auth
+  - callback
+  - oauth
+  - login
+```
+
+**Init behavior**
+
+- Creates `accessguard.yaml` in the current directory
+- Does not overwrite an existing `accessguard.yaml`
+- Prints a success/info message in both cases
 
 ---
 

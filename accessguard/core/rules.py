@@ -6,10 +6,7 @@ from dataclasses import dataclass
 from accessguard.core.parser import RouteInfo, collect_calls
 
 
-SENSITIVE_NODE_KEYWORDS = {"database", "billing", "admin", "token", "decrypt", "reset"}
-SENSITIVE_KEYWORDS = {"billing", "token", "auth", "secret"}
-HIGH_PRIV_KEYWORDS = {"admin", "delete", "reset", "token", "decrypt", "billing"}
-SAFE_ROUTE_KEYWORDS = {"auth", "callback", "oauth", "login"}
+SENSITIVE_NODE_BASE_KEYWORDS = {"database", "decrypt", "reset"}
 SAFE_RESOURCE_KEYWORDS = {"token", "encrypt", "decrypt"}
 
 
@@ -26,10 +23,15 @@ def clean_node(node: str) -> str:
 
 
 def detect_risks(
-    routes: list[RouteInfo], sensitive_paths: list[dict[str, str | list[str]]]
+    routes: list[RouteInfo],
+    sensitive_paths: list[dict[str, str | list[str]]],
+    config: dict[str, list[str]],
 ) -> list[Risk]:
     risks: list[Risk] = []
     route_by_key = {f"{route.method} {route.path}": route for route in routes}
+    sensitive_keywords = _config_list(config, "sensitive_keywords")
+    high_priv_keywords = _config_list(config, "high_privilege_keywords")
+    safe_routes = _config_list(config, "safe_routes")
 
     for path_risk in sensitive_paths:
         route_key = str(path_risk["route"])
@@ -43,20 +45,25 @@ def detect_risks(
 
         route_domain = _extract_route_domain(route.path)
         access_domains = _extract_access_domains(path)
-        detected_domain = _detect_domain(access_domains, resource)
+        detected_domain = _detect_domain(access_domains, resource, sensitive_keywords)
         is_mismatch = route_domain not in access_domains if route_domain else True
         is_route_admin = "admin" in route.path.lower()
-        is_high_priv_resource = _access_privilege(resource) == "HIGH"
-        is_allowlisted = _is_allowlisted(route.path, resource)
-        is_sensitive = _has_sensitive_access(path)
+        is_high_priv_resource = _access_privilege(resource, high_priv_keywords) == "HIGH"
+        is_allowlisted = _is_allowlisted(route.path, resource, safe_routes)
+        is_sensitive = _has_sensitive_access(path, sensitive_keywords)
+        is_safe_route = _is_safe_route(route.path, safe_routes)
 
         # Apply both signals to every sensitive path.
-        if is_allowlisted:
+        if is_safe_route or is_allowlisted:
             risks.append(
                 Risk(
                     severity="LOW",
                     route_key=route_key,
-                    reason="Sensitive access appears expected for this route",
+                    reason=(
+                        "Sensitive access appears expected for this route"
+                        if is_allowlisted
+                        else "Route matches configured safe routes"
+                    ),
                     score=1,
                 )
             )
@@ -92,7 +99,7 @@ def detect_risks(
     return _dedupe_risks_by_route_key(risks)
 
 
-def _has_sensitive_access(path: object) -> bool:
+def _has_sensitive_access(path: object, sensitive_keywords: list[str]) -> bool:
     if not isinstance(path, list):
         return False
 
@@ -100,7 +107,7 @@ def _has_sensitive_access(path: object) -> bool:
         node = clean_node(str(raw)).lower()
         if "db." in node:
             return True
-        if any(keyword in node for keyword in SENSITIVE_KEYWORDS):
+        if any(keyword in node for keyword in sensitive_keywords):
             return True
     return False
 
@@ -133,8 +140,8 @@ def _extract_access_domains(path: object) -> set[str]:
     return domains
 
 
-def _detect_domain(access_domains: set[str], resource: str) -> str:
-    for keyword in SENSITIVE_KEYWORDS:
+def _detect_domain(access_domains: set[str], resource: str, sensitive_keywords: list[str]) -> str:
+    for keyword in sensitive_keywords:
         if keyword in access_domains or keyword in resource.lower():
             return keyword
     if "db" in access_domains or "db." in resource.lower():
@@ -144,19 +151,29 @@ def _detect_domain(access_domains: set[str], resource: str) -> str:
     return "unknown"
 
 
-def _access_privilege(resource: str) -> str:
+def _access_privilege(resource: str, high_priv_keywords: list[str]) -> str:
     lower = resource.lower()
-    if any(keyword in lower for keyword in HIGH_PRIV_KEYWORDS):
+    if any(keyword in lower for keyword in high_priv_keywords):
         return "HIGH"
     return "NORMAL"
 
 
-def _is_allowlisted(route_path: str, resource: str) -> bool:
+def _is_allowlisted(route_path: str, resource: str, safe_routes: list[str]) -> bool:
     route_lower = route_path.lower()
     resource_lower = resource.lower()
-    route_safe = any(keyword in route_lower for keyword in SAFE_ROUTE_KEYWORDS)
+    route_safe = any(keyword in route_lower for keyword in safe_routes)
     resource_safe = any(keyword in resource_lower for keyword in SAFE_RESOURCE_KEYWORDS)
     return route_safe and resource_safe
+
+
+def _is_safe_route(route_path: str, safe_routes: list[str]) -> bool:
+    route_lower = route_path.lower()
+    return any(route in route_lower for route in safe_routes)
+
+
+def _config_list(config: dict[str, list[str]], key: str) -> list[str]:
+    values = config.get(key, [])
+    return [str(value).lower() for value in values if str(value).strip()]
 
 
 def detect_sensitive_paths(
@@ -166,10 +183,14 @@ def detect_sensitive_paths(
     import_maps: dict[str, dict[str, str]],
     class_map: dict[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]],
     instance_maps: dict[str, dict[str, str]],
+    config: dict[str, list[str]],
 ) -> list[dict[str, str | list[str]]]:
     edges = graph.get("edges", [])
     adjacency: dict[str, list[str]] = {}
     function_nodes = {name: f"func:{name}" for name in function_map}
+    sensitive_node_keywords = SENSITIVE_NODE_BASE_KEYWORDS | set(
+        _config_list(config, "sensitive_keywords")
+    ) | set(_config_list(config, "high_privilege_keywords"))
 
     if isinstance(edges, list):
         for src, dst, _etype in edges:
@@ -192,7 +213,7 @@ def detect_sensitive_paths(
                 continue
             visited.add(visit_key)
 
-            if any(word in current_node.lower() for word in SENSITIVE_NODE_KEYWORDS):
+            if any(word in current_node.lower() for word in sensitive_node_keywords):
                 match = {
                     "route": route_key,
                     "path": current_path,
@@ -237,7 +258,7 @@ def detect_sensitive_paths(
 
             for neighbor in neighbors:
                 next_path = [*current_path, neighbor]
-                if any(word in neighbor.lower() for word in SENSITIVE_NODE_KEYWORDS):
+                if any(word in neighbor.lower() for word in sensitive_node_keywords):
                     match = {
                         "route": route_key,
                         "path": next_path,
